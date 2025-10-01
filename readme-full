@@ -172,7 +172,7 @@ S3_SECRET_KEY=TypebotSecret123!
 S3_BUCKET=typebot-bucket
 
 # Use domain published via NPM (must point to SERVER_A IP)
-S3_ENDPOINT=https://s3.minio.salokapark.app
+S3_ENDPOINT=s3.minio.salokapark.app
 S3_REGION=us-east-1
 S3_FORCE_PATH_STYLE=true
 
@@ -373,7 +373,3 @@ echo "Public URL: ${ENDPOINT_PUBLIC}/${BUCKET}/${BASENAME}"
 * Jika ingin membatasi publikasi hanya pada folder `public/` di bucket, jangan set bucket sebagai public, tetapi atur policy custom (bisa dibuat lewat `mc admin policy` dengan JSON policy).
 
 ---
-
-Jika kamu mau saya export file-file ini sebagai satu tarball (agar tinggal download) bilang saja — saya bisa sediakan link unduh.
-
-*Dokumen dibuat otomatis berdasarkan semua langkah yang sudah kamu lakukan pada sesi ini. Semoga membantu — kalau mau saya sesuaikan nama bucket/credential tinggal bilang.*
