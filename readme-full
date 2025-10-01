@@ -1,1 +1,28 @@
+Typebot + MinIO — Complete deployment checklist
+
+Dokumen ini berisi ringkasan step-by-step dan semua file yang diperlukan untuk membuat Typebot (builder + viewer) terintegrasi dengan MinIO (self-hosted), termasuk konfigurasi docker-compose.yml, .env, dan skrip otomasi (.sh).
+Catatan: letakkan semua file di satu folder di server (mis. /opt/typebot/) dan jalankan perintah sesuai urutan pada bagian Quick run.
+
+//Ringkasan langkah (high-level)
+Siapkan server A: Docker & Docker Compose tersedia.
+Simpan file docker-compose.yml dan .env di folder project.
+Jalankan docker compose up -d untuk men-deploy Postgres, MinIO, Typebot (builder + viewer).
+Jalankan ./init-minio.sh untuk membuat user typebot-s3-user, bucket typebot-bucket, attach policy readwrite.
+Jalankan ./make-public.sh untuk set bucket (atau folder) menjadi public supaya file dapat diakses via domain publik.
+(Optional) Gunakan ./upload-to-minio.sh <file> untuk upload file dan langsung mendapatkan public URL.
+
+Pastikan Nginx Proxy Manager (server B) mem-forward domain:
+tb-builder.salokapark.app → SERVER_A_IP:3100
+tb-viewer.salokapark.app → SERVER_A_IP:3200
+s3.minio.salokapark.app → SERVER_A_IP:9000 (MinIO API)
+console.minio.salokapark.app → SERVER_A_IP:9001 (MinIO Console)
+
+//Quick run (recommended order)
+Taruh file docker-compose.yml, .env, dan skrip di folder project.
+chmod +x init-minio.sh make-public.sh upload-to-minio.sh
+docker compose up -d
+Tunggu semua container ready (docker compose ps / docker logs jika perlu).
+./init-minio.sh # create user + bucket + policy
+./make-public.sh # set bucket public
+Tes upload via Typebot UI dan akses file via https://s3.minio.salokapark.app/typebot-bucket/...
 
