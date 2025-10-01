@@ -1,28 +1,379 @@
-Typebot + MinIO — Complete deployment checklist
+# Typebot + MinIO — Complete deployment checklist
 
-Dokumen ini berisi ringkasan step-by-step dan semua file yang diperlukan untuk membuat Typebot (builder + viewer) terintegrasi dengan MinIO (self-hosted), termasuk konfigurasi docker-compose.yml, .env, dan skrip otomasi (.sh).
-Catatan: letakkan semua file di satu folder di server (mis. /opt/typebot/) dan jalankan perintah sesuai urutan pada bagian Quick run.
+Dokumen ini berisi ringkasan **step-by-step** dan semua file yang diperlukan untuk membuat **Typebot (builder + viewer)** terintegrasi dengan **MinIO** (self-hosted), termasuk konfigurasi `docker-compose.yml`, `.env`, dan skrip otomasi (`.sh`).
 
-//Ringkasan langkah (high-level)
-Siapkan server A: Docker & Docker Compose tersedia.
-Simpan file docker-compose.yml dan .env di folder project.
-Jalankan docker compose up -d untuk men-deploy Postgres, MinIO, Typebot (builder + viewer).
-Jalankan ./init-minio.sh untuk membuat user typebot-s3-user, bucket typebot-bucket, attach policy readwrite.
-Jalankan ./make-public.sh untuk set bucket (atau folder) menjadi public supaya file dapat diakses via domain publik.
-(Optional) Gunakan ./upload-to-minio.sh <file> untuk upload file dan langsung mendapatkan public URL.
+> Catatan: letakkan semua file di satu folder di server (mis. `/opt/typebot/`) dan jalankan perintah sesuai urutan pada bagian *Quick run*.
 
-Pastikan Nginx Proxy Manager (server B) mem-forward domain:
-tb-builder.salokapark.app → SERVER_A_IP:3100
-tb-viewer.salokapark.app → SERVER_A_IP:3200
-s3.minio.salokapark.app → SERVER_A_IP:9000 (MinIO API)
-console.minio.salokapark.app → SERVER_A_IP:9001 (MinIO Console)
+---
 
-//Quick run (recommended order)
-Taruh file docker-compose.yml, .env, dan skrip di folder project.
-chmod +x init-minio.sh make-public.sh upload-to-minio.sh
-docker compose up -d
-Tunggu semua container ready (docker compose ps / docker logs jika perlu).
-./init-minio.sh # create user + bucket + policy
-./make-public.sh # set bucket public
-Tes upload via Typebot UI dan akses file via https://s3.minio.salokapark.app/typebot-bucket/...
+## Ringkasan langkah (high-level)
 
+1. Siapkan server A: Docker & Docker Compose tersedia.
+2. Simpan file `docker-compose.yml` dan `.env` di folder project.
+3. Jalankan `docker compose up -d` untuk men-deploy Postgres, MinIO, Typebot (builder + viewer).
+4. Jalankan `./init-minio.sh` untuk membuat user `typebot-s3-user`, bucket `typebot-bucket`, attach policy `readwrite`.
+5. Jalankan `./make-public.sh` untuk set bucket (atau folder) menjadi public supaya file dapat diakses via domain publik.
+6. (Optional) Gunakan `./upload-to-minio.sh <file>` untuk upload file dan langsung mendapatkan public URL.
+7. Pastikan Nginx Proxy Manager (server B) mem-forward domain:
+
+   * `tb-builder.salokapark.app` → `SERVER_A_IP:3100`
+   * `tb-viewer.salokapark.app` → `SERVER_A_IP:3200`
+   * `s3.minio.salokapark.app` → `SERVER_A_IP:9000` (MinIO API)
+   * `console.minio.salokapark.app` → `SERVER_A_IP:9001` (MinIO Console)
+
+---
+
+## Quick run (recommended order)
+
+1. Taruh file `docker-compose.yml`, `.env`, dan skrip di folder project.
+2. `chmod +x init-minio.sh make-public.sh upload-to-minio.sh`
+3. `docker compose up -d`
+4. Tunggu semua container ready (`docker compose ps` / `docker logs` jika perlu).
+5. `./init-minio.sh`  # create user + bucket + policy
+6. `./make-public.sh` # set bucket public
+7. Tes upload via Typebot UI dan akses file via `https://s3.minio.salokapark.app/typebot-bucket/...`
+
+---
+
+## File: `docker-compose.yml`
+
+```yaml
+services:
+  # Postgres DB
+  typebot-db:
+    image: postgres:15
+    container_name: typebot-db
+    restart: always
+    environment:
+      POSTGRES_USER: typebot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: typebot
+    volumes:
+      - typebot-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U typebot -d typebot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MinIO
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    restart: always
+    env_file:
+      - .env
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # Console
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Typebot Builder (backend + editor)
+  typebot-builder:
+    image: baptistearno/typebot-builder:latest
+    container_name: typebot-builder
+    restart: always
+    ports:
+      - "3100:3000"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: "postgresql://typebot:${POSTGRES_PASSWORD}@typebot-db:5432/typebot"
+      HOST: "0.0.0.0"
+      NODE_ENV: production
+    depends_on:
+      typebot-db:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://0.0.0.0:3000 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # Typebot Viewer (frontend)
+  typebot-viewer:
+    image: baptistearno/typebot-viewer:latest
+    container_name: typebot-viewer
+    restart: always
+    ports:
+      - "3200:3000"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: "postgresql://typebot:${POSTGRES_PASSWORD}@typebot-db:5432/typebot"
+      HOST: "0.0.0.0"
+      NODE_ENV: production
+    depends_on:
+      typebot-db:
+        condition: service_healthy
+      typebot-builder:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://0.0.0.0:3000 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  minio-data:
+  typebot-db-data:
+```
+
+---
+
+## File: `.env` (FINAL — sesuaikan bila perlu)
+
+> Letakkan file `.env` di folder yang sama dengan `docker-compose.yml`.
+
+```env
+# ========== DATABASE (Postgres) ==============
+POSTGRES_PASSWORD=84b9c1a7e2c4f86d1a5e0c3b
+
+# ========== TYPEBOT CONFIG ==================
+ENCRYPTION_SECRET=f9d84b9c1a7e2c4f86d1a5e0c3b2f4qq
+NEXTAUTH_SECRET=f9d84b9c1a7e2c4f86d1a5e0c3b2f4xy
+NEXTAUTH_URL=https://tb-builder.salokapark.app
+NEXT_PUBLIC_VIEWER_URL=https://tb-viewer.salokapark.app
+NODE_ENV=production
+DISABLE_SIGNUP=true
+
+# ========== SMTP ============================
+ADMIN_EMAIL=funpark.saloka@gmail.com
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USERNAME=funpark.saloka@gmail.com
+SMTP_PASSWORD=zmmbljhtqsdcpffq
+NEXT_PUBLIC_SMTP_FROM=funpark.saloka@gmail.com
+
+# ========== MINIO ROOT (Superuser) ==========
+MINIO_ROOT_USER=root
+MINIO_ROOT_PASSWORD=SuperSecretRootPass123!
+
+# ========== TYPEBOT STORAGE (S3) ============
+STORAGE_DRIVER=s3
+S3_ACCESS_KEY=typebot-s3-user
+S3_SECRET_KEY=TypebotSecret123!
+S3_BUCKET=typebot-bucket
+
+# Use domain published via NPM (must point to SERVER_A IP)
+S3_ENDPOINT=https://s3.minio.salokapark.app
+S3_REGION=us-east-1
+S3_FORCE_PATH_STYLE=true
+
+# Public endpoint used on client (browser)
+NEXT_PUBLIC_S3_ENDPOINT=https://s3.minio.salokapark.app
+
+# S3 behavior
+S3_SIGNED_URL_ENABLED=false
+ENABLE_UPLOAD_PROXY=false
+```
+
+---
+
+## Script: `init-minio.sh`
+
+Auto-create alias (root), create Typebot user, bucket, attach policy.
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+# init-minio.sh
+# Usage: ./init-minio.sh
+# This script will: alias MinIO (root), create S3 user, create bucket, attach readwrite policy.
+
+# Try to source local .env if exists
+if [ -f .env ]; then
+  # shellcheck disable=SC1091
+  source .env
+fi
+
+MINIO_ALIAS="minio"
+MINIO_URL="http://127.0.0.1:9000"
+ROOT_USER="${MINIO_ROOT_USER:-root}"
+ROOT_PASS="${MINIO_ROOT_PASSWORD:-SuperSecretRootPass123!}"
+TYPEBOT_USER="${S3_ACCESS_KEY:-typebot-s3-user}"
+TYPEBOT_PASS="${S3_SECRET_KEY:-TypebotSecret123!}"
+BUCKET="${S3_BUCKET:-typebot-bucket}"
+
+# helper: use local mc if available, else docker run fallback
+run_mc() {
+  if command -v mc >/dev/null 2>&1; then
+    mc "$@"
+  else
+    # Use docker run with proper env (quote carefully)
+    docker run --rm --network=typebot-docker_default \
+      -e "MC_HOST_${MINIO_ALIAS}=http://${ROOT_USER}:${ROOT_PASS}@minio:9000" \
+      minio/mc "$@"
+  fi
+}
+
+echo "[1/5] Setting alias (root)"
+if command -v mc >/dev/null 2>&1; then
+  mc alias set ${MINIO_ALIAS} ${MINIO_URL} ${ROOT_USER} "${ROOT_PASS}"
+else
+  docker run --rm --network=typebot-docker_default \
+    minio/mc alias set ${MINIO_ALIAS} ${MINIO_URL} ${ROOT_USER} "${ROOT_PASS}"
+fi
+
+# Create user if not exists
+echo "[2/5] Ensure user ${TYPEBOT_USER} exists"
+if run_mc admin user list ${MINIO_ALIAS} | grep -q "${TYPEBOT_USER}"; then
+  echo "- user exists: ${TYPEBOT_USER}"
+else
+  run_mc admin user add ${MINIO_ALIAS} ${TYPEBOT_USER} "${TYPEBOT_PASS}"
+  echo "- created user ${TYPEBOT_USER}"
+fi
+
+# Attach readwrite policy
+echo "[3/5] Attach readwrite policy to ${TYPEBOT_USER}"
+run_mc admin policy attach ${MINIO_ALIAS} readwrite --user ${TYPEBOT_USER} || true
+
+# Create bucket if missing
+echo "[4/5] Ensure bucket ${BUCKET} exists"
+if run_mc ls ${MINIO_ALIAS}/${BUCKET} >/dev/null 2>&1; then
+  echo "- bucket exists"
+else
+  run_mc mb ${MINIO_ALIAS}/${BUCKET}
+  echo "- bucket created"
+fi
+
+# Done
+echo "[5/5] init-minio finished. User: ${TYPEBOT_USER}  Bucket: ${BUCKET}"
+```
+
+---
+
+## Script: `make-public.sh`
+
+Set bucket public (anonymous read). Run after `init-minio.sh`.
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+# load env if present
+if [ -f .env ]; then source .env; fi
+MINIO_ALIAS="minio"
+MINIO_URL="http://127.0.0.1:9000"
+ROOT_USER="${MINIO_ROOT_USER:-root}"
+ROOT_PASS="${MINIO_ROOT_PASSWORD:-SuperSecretRootPass123!}"
+BUCKET="${S3_BUCKET:-typebot-bucket}"
+
+if command -v mc >/dev/null 2>&1; then
+  mc alias set ${MINIO_ALIAS} ${MINIO_URL} ${ROOT_USER} "${ROOT_PASS}"
+  mc anonymous set public ${MINIO_ALIAS}/${BUCKET}
+else
+  docker run --rm --network=typebot-docker_default \
+    -e "MC_HOST_${MINIO_ALIAS}=http://${ROOT_USER}:${ROOT_PASS}@minio:9000" \
+    minio/mc anonymous set public ${MINIO_ALIAS}/${BUCKET}
+fi
+
+echo "Bucket ${BUCKET} set to public (anonymous read)."
+```
+
+---
+
+## Script: `upload-to-minio.sh`
+
+Upload file and print its public URL. Optionally randomize filename with `-r`.
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Usage: ./upload-to-minio.sh [-r] <file>
+# -r : randomize filename (prefix timestamp + random)
+
+RANDOMIZE=0
+while getopts ":r" opt; do
+  case $opt in
+    r) RANDOMIZE=1 ;;
+    *) echo "Usage: $0 [-r] <file>"; exit 1 ;;
+  esac
+done
+shift $((OPTIND-1))
+
+FILE="$1"
+if [ -z "${FILE}" ] || [ ! -f "${FILE}" ]; then
+  echo "Provide a valid file path"
+  exit 1
+fi
+
+# load env for bucket & endpoint
+if [ -f .env ]; then source .env; fi
+BUCKET="${S3_BUCKET:-typebot-bucket}"
+ENDPOINT_PUBLIC="${NEXT_PUBLIC_S3_ENDPOINT:-https://s3.minio.salokapark.app}"
+MINIO_ALIAS="minio"
+MINIO_URL="http://127.0.0.1:9000"
+ROOT_USER="${MINIO_ROOT_USER:-root}"
+ROOT_PASS="${MINIO_ROOT_PASSWORD:-SuperSecretRootPass123!}"
+
+BASENAME=$(basename "$FILE")
+if [ "$RANDOMIZE" -eq 1 ]; then
+  SUF=$(date +%s)-$((RANDOM%10000))
+  BASENAME="${SUF}-${BASENAME}"
+fi
+
+# upload
+if command -v mc >/dev/null 2>&1; then
+  mc alias set ${MINIO_ALIAS} ${MINIO_URL} ${ROOT_USER} "${ROOT_PASS}"
+  mc cp "$FILE" ${MINIO_ALIAS}/${BUCKET}/${BASENAME}
+else
+  docker run --rm --network=typebot-docker_default \
+    -v "$(pwd)":/data -w /data \
+    -e "MC_HOST_${MINIO_ALIAS}=http://${ROOT_USER}:${ROOT_PASS}@minio:9000" \
+    minio/mc cp "/data/$(basename "$FILE")" ${MINIO_ALIAS}/${BUCKET}/${BASENAME}
+fi
+
+echo "\nUploaded: ${BASENAME}"
+echo "Public URL: ${ENDPOINT_PUBLIC}/${BUCKET}/${BASENAME}"
+```
+
+---
+
+## Verification & useful commands
+
+* Check containers:
+
+  * `docker compose ps`
+  * `docker logs minio -f`
+* Test MinIO root via mc (local):
+
+  * `mc alias set minio http://127.0.0.1:9000 root SuperSecretRootPass123!`
+  * `mc ls minio`
+* Test Typebot S3 connectivity (example):
+
+  * Ensure `.env` S3 variables point to `https://s3.minio.salokapark.app`
+  * Restart Typebot: `docker compose restart typebot-builder typebot-viewer`
+* If API returns `Invalid endPoint : http://minio:9000` → means Typebot still reading internal endpoint. Edit `.env` to use the public domain and `docker compose restart`.
+
+---
+
+## Notes & troubleshooting
+
+* Jika password mengandung `!` dan kamu jalankan perintah di shell, gunakan quotes `'...'` atau `"..."` supaya shell tidak melakukan history expansion.
+* Jika kamu pakai **Nginx Proxy Manager (NPM)** di server B, pastikan host header dan forwarding port 9000 (s3) dan 9001 (console) diarahkan ke server A.
+* Jika ingin membatasi publikasi hanya pada folder `public/` di bucket, jangan set bucket sebagai public, tetapi atur policy custom (bisa dibuat lewat `mc admin policy` dengan JSON policy).
+
+---
+
+Jika kamu mau saya export file-file ini sebagai satu tarball (agar tinggal download) bilang saja — saya bisa sediakan link unduh.
+
+*Dokumen dibuat otomatis berdasarkan semua langkah yang sudah kamu lakukan pada sesi ini. Semoga membantu — kalau mau saya sesuaikan nama bucket/credential tinggal bilang.*
